@@ -5,7 +5,7 @@ export const useSocket = (eventHandlers = {}) => {
   const socketRef = useRef(null);
 
   useEffect(() => {
-    const wsUrl = import.meta.env.VITE_WS_URL || 'http://localhost:5000';
+    const wsUrl = import.meta.env.VITE_WS_URL || (import.meta.env.PROD ? window.location.origin : 'http://localhost:5000');
     
     // Connect to the socket server
     const socket = io(wsUrl, {

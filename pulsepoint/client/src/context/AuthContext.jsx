@@ -146,7 +146,8 @@ export const AuthProvider = ({ children }) => {
     console.log('Initializing new WebSocket connection with token:', token.substring(0, 10) + '...');
     
     try {
-      const newSocket = io(import.meta.env.VITE_WS_URL || 'http://localhost:5000', {
+      const wsTarget = import.meta.env.VITE_WS_URL || (import.meta.env.PROD ? window.location.origin : 'http://localhost:5000');
+      const newSocket = io(wsTarget, {
         path: '/socket.io',
         transports: ['websocket', 'polling'],
         reconnection: false, // We'll handle reconnection manually
