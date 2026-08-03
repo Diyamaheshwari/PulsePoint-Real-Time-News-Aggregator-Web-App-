@@ -1,11 +1,18 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 
+const getNewsApiBaseUrl = () => {
+  const envUrl = import.meta.env.VITE_API_URL;
+  if (envUrl) {
+    return envUrl.endsWith('/news') ? envUrl : `${envUrl}/news`;
+  }
+  return import.meta.env.PROD ? '/api/news' : 'http://localhost:5000/api/news';
+};
+
 // Create a custom axios instance with request cancellation support
 const newsApi = axios.create({
-  baseURL: `${import.meta.env.VITE_API_URL || 'http://localhost:5000/api'}/news`,
+  baseURL: getNewsApiBaseUrl(),
   timeout: 10000,
-  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
     'Accept': 'application/json'

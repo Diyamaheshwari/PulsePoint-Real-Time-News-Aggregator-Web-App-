@@ -1,21 +1,20 @@
-const CACHE_NAME = 'newssphere-v1';
+const CACHE_NAME = 'newssphere-v2';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
-  '/src/index.js',
-  '/src/App.js',
-  '/src/index.css',
-  '/favicon.ico',
-  '/logo192.png',
   '/manifest.json'
 ];
 
 // Install Service Worker
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
+    caches.open(CACHE_NAME).then(async (cache) => {
       console.log('PWA Service Worker: Pre-caching Core App Shell Assets');
-      return cache.addAll(ASSETS_TO_CACHE);
+      try {
+        await cache.addAll(ASSETS_TO_CACHE);
+      } catch (err) {
+        console.warn('PWA Service Worker: Pre-cache warning:', err);
+      }
     })
   );
   self.skipWaiting();
@@ -40,11 +39,14 @@ self.addEventListener('activate', (event) => {
 
 // Cache first, Network fallback strategy for static assets
 self.addEventListener('fetch', (event) => {
-  // Only intercept HTTP/HTTPS GET requests
+  // Only intercept GET requests
   if (event.request.method !== 'GET') return;
-  
+
   const url = new URL(event.request.url);
-  
+
+  // Skip non-HTTP(S) schemas
+  if (!url.protocol.startsWith('http')) return;
+
   // Skip API queries or socket.io connection queries
   if (url.pathname.startsWith('/api') || url.pathname.startsWith('/socket.io')) {
     return;
@@ -55,7 +57,7 @@ self.addEventListener('fetch', (event) => {
       if (cachedResponse) {
         return cachedResponse;
       }
-      
+
       return fetch(event.request)
         .then((networkResponse) => {
           if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
@@ -69,11 +71,17 @@ self.addEventListener('fetch', (event) => {
 
           return networkResponse;
         })
-        .catch(() => {
-          // If offline and request is an HTML page, return index.html shell
+        .catch(async () => {
+          // Guarantee valid Response return for fetch errors
           if (event.request.mode === 'navigate') {
-            return caches.match('/index.html');
+            const indexShell = await caches.match('/index.html');
+            if (indexShell) return indexShell;
           }
+          return new Response('Network error or offline', {
+            status: 503,
+            statusText: 'Service Unavailable',
+            headers: new Headers({ 'Content-Type': 'text/plain' })
+          });
         });
     })
   );

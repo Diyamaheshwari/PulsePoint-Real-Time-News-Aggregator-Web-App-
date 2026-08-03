@@ -22,25 +22,33 @@ const communityReducer = (state, action) => {
       return { ...state, error: null };
     case 'FETCH_START':
       return { ...state, loading: true, error: null };
-    case 'FETCH_POSTS_SUCCESS':
+    case 'FETCH_POSTS_SUCCESS': {
+      const incomingPosts = Array.isArray(action.payload) 
+        ? action.payload 
+        : (action.payload?.posts || action.payload?.data || []);
       return {
         ...state,
         loading: false,
-        posts: [...state.posts, ...action.payload],
-        hasMore: action.payload.length === state.limit,
-        page: action.payload.length === state.limit ? state.page + 1 : state.page
+        posts: [...state.posts, ...incomingPosts],
+        hasMore: incomingPosts.length === state.limit,
+        page: incomingPosts.length === state.limit ? state.page + 1 : state.page
       };
-    case 'FETCH_POLLS_SUCCESS':
+    }
+    case 'FETCH_POLLS_SUCCESS': {
+      const incomingPolls = Array.isArray(action.payload) 
+        ? action.payload 
+        : (action.payload?.polls || action.payload?.data || []);
       return {
         ...state,
         loading: false,
-        activePolls: action.payload
+        activePolls: incomingPolls
       };
+    }
     case 'FETCH_DAILY_POLL_SUCCESS':
       return {
         ...state,
         loading: false,
-        dailyPoll: action.payload
+        dailyPoll: action.payload || null
       };
     case 'ADD_POST':
       return {
