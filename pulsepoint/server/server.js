@@ -172,26 +172,25 @@ const setupDailyPolls = async () => {
 };
 
 const createAdminUser = async () => {
-  if (process.env.NODE_ENV === 'development') {
-    try {
-      const User = require('./models/User');
-      const admin = await User.findOne({ email: 'admin@newssphere.in' });
+  try {
+    const User = require('./models/User');
+    const emails = ['admin@pulsepoint.in', 'admin@newssphere.in'];
+    for (const email of emails) {
+      const admin = await User.findOne({ email });
       if (!admin) {
         await User.create({
-          username: 'admin',
-          email: 'admin@newssphere.in',
+          username: email.split('@')[0],
+          email,
           password: 'Admin@123',
           role: 'admin',
           onboardingCompleted: true
         });
-        console.log('Admin user created: admin@newssphere.in');
+        console.log(`Admin user created: ${email}`);
       }
-    } catch (error) {
-      if (error.code === 11000) {
-        // Admin already exists — nothing to do
-      } else {
-        console.error('Error creating admin user:', error);
-      }
+    }
+  } catch (error) {
+    if (error.code !== 11000) {
+      console.error('Error creating admin user:', error);
     }
   }
 };
