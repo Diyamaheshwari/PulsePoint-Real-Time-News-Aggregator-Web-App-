@@ -1,0 +1,11 @@
+{
+  "buildCommand": "cd pulsepoint/client && npm install && npm run build",
+  "outputDirectory": "pulsepoint/client/dist",
+  "framework": "vite",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
