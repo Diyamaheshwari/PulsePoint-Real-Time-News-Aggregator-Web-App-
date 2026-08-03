@@ -1,278 +1,431 @@
-const jwt = require('jsonwebtoken');
+/**
+ * NewsSphere – Auth Controller
+ *
+ * Handles registration, login (with Access + Refresh tokens),
+ * onboarding preferences, profile management, token refresh,
+ * Google OAuth callback, and logout.
+ */
 const User = require('../models/User');
+const Notification = require('../models/Notification');
+const Post = require('../models/Post');
+const tokenService = require('../services/tokenService');
 const { info, error: logError } = require('../utils/logger');
 
-// Cookie options
-const cookieOptions = {
+// ── Cookie helpers ─────────────────────────────────────────────
+const COOKIE_OPTS = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production', // Enable in production with HTTPS
-  sameSite: 'strict',
-  maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
   path: '/'
 };
 
-// Generate JWT Token
-const generateToken = (id, role) => {
-  return jwt.sign(
-    { id, role },
-    process.env.JWT_SECRET,
-    { expiresIn: '30d' }
-  );
-};
+function setTokenCookies(res, accessToken, refreshToken) {
+  res.cookie('token', accessToken, { ...COOKIE_OPTS, maxAge: 15 * 60 * 1000 }); // 15 min
+  res.cookie('refreshToken', refreshToken, { ...COOKIE_OPTS, maxAge: 7 * 24 * 60 * 60 * 1000 }); // 7d
+  res.cookie('isLoggedIn', 'true', {
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+    sameSite: COOKIE_OPTS.sameSite,
+    secure: COOKIE_OPTS.secure,
+    path: '/'
+  });
+}
 
-// @desc    Register a new user
-// @route   POST /api/auth/register
-// @access  Public
+// ── Register ───────────────────────────────────────────────────
 exports.register = async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
-    // Check if user already exists
-    const userExists = await User.findOne({ email });
-    if (userExists) {
-      logError('REGISTRATION_FAILED', null, req.ip, { email, reason: 'User already exists' });
-      return res.status(400).json({ message: 'User already exists' });
+    if (!username || !email || !password) {
+      return res.status(400).json({ success: false, message: 'All fields are required' });
     }
 
-    // Create user
+    const userExists = await User.findOne({ $or: [{ email }, { username: username.toLowerCase() }] });
+    if (userExists) {
+      return res.status(400).json({ success: false, message: 'User already exists' });
+    }
+
     const user = await User.create({
-      username,
-      email,
+      username: username.toLowerCase(),
+      email: email.toLowerCase(),
       password,
-      role: email === 'admin@pulsepoint.in' ? 'admin' : 'user'
+      role: email === 'admin@newssphere.in' ? 'admin' : 'user',
+      onboardingCompleted: false
     });
 
-    // Log successful registration
-    info('USER_REGISTERED', user._id, req.ip, { 
-      email, 
-      role: user.role,
-      registrationDate: new Date().toISOString() 
-    });
+    const { accessToken, refreshToken } = tokenService.generateTokens(user);
+    setTokenCookies(res, accessToken, refreshToken);
 
-    // Generate token
-    const token = generateToken(user._id, user.role);
-
-    // Set HTTP-only cookie
-    res.cookie('token', token, cookieOptions);
+    info('USER_REGISTERED', user._id, req.ip, { email });
 
     res.status(201).json({
-      _id: user._id,
-      username: user.username,
-      email: user.email,
-      role: user.role
+      success: true,
+      token: accessToken,
+      user: {
+        _id: user._id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        onboardingCompleted: user.onboardingCompleted
+      }
     });
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ message: 'Server error during registration' });
+    res.status(500).json({ success: false, message: 'Server error during registration' });
   }
 };
 
-// @desc    Auth user & get token
-// @route   POST /api/auth/login
-// @access  Public
+// ── Login ──────────────────────────────────────────────────────
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-
-    // Validate input
     if (!email || !password) {
-      return res.status(400).json({ message: 'Please provide both email and password' });
+      return res.status(400).json({ success: false, message: 'Email and password are required' });
     }
 
-    // Check for user
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
     if (!user) {
-      logError('LOGIN_FAILED', null, req.ip, { email, reason: 'User not found' });
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid email or password' // Don't reveal if user exists or not
-      });
-    }
-
-    // Check password
-    if (!user.password) {
-      console.error('User password is missing in database');
-      logError('LOGIN_ERROR', user._id, req.ip, { error: 'Password missing in database' });
-      return res.status(500).json({ 
-        success: false,
-        message: 'Internal server error' 
-      });
+      return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
 
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       logError('LOGIN_FAILED', user._id, req.ip, { email, reason: 'Invalid password' });
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
 
-    // Generate token
-    const token = generateToken(user._id, user.role);
+    const { accessToken, refreshToken } = tokenService.generateTokens(user);
+    setTokenCookies(res, accessToken, refreshToken);
 
-    // Set HTTP-only cookie
-    res.cookie('token', token, {
-      ...cookieOptions,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-      path: '/',
-      httpOnly: true
-    });
-    
-    // Also set a non-httpOnly cookie for client-side checks if needed
-    res.cookie('isLoggedIn', 'true', {
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      path: '/'
-    });
+    info('USER_LOGGED_IN', user._id, req.ip, { email: user.email, role: user.role });
 
-    // Log successful login
-    info('USER_LOGGED_IN', user._id, req.ip, { 
-      email: user.email, 
-      role: user.role, 
-      loginTime: new Date().toISOString() 
-    });
-
-    // Return both token and user data in the expected format
     res.json({
       success: true,
-      token: token,
+      token: accessToken,
       user: {
         _id: user._id,
         username: user.username,
         email: user.email,
-        role: user.role
+        role: user.role,
+        onboardingCompleted: user.onboardingCompleted,
+        preferences: user.preferences,
+        language: user.language
       }
     });
   } catch (error) {
     console.error('Login error:', error);
-    logError('LOGIN_ERROR', null, req.ip, { 
-      email: req.body.email, 
-      error: error.message,
-      stack: error.stack 
-    });
-    
-    // More specific error messages
-    if (error.message.includes('Illegal arguments')) {
-      return res.status(400).json({ message: 'Invalid password format' });
-    }
-    res.status(500).json({ message: 'Server error during login' });
+    res.status(500).json({ success: false, message: 'Server error during login' });
   }
 };
 
-// @desc    Update user profile
-// @route   PUT /api/auth/profile
-// @access  Private
-exports.updateUserProfile = async (req, res) => {
+// ── Refresh Token ──────────────────────────────────────────────
+exports.refreshToken = async (req, res) => {
   try {
-    const { username, email, currentPassword, newPassword } = req.body;
-    const user = await User.findById(req.user._id).select('+password');
-
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+    const token = req.cookies?.refreshToken || req.body?.refreshToken;
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Refresh token required' });
     }
 
-    // Update username if provided
-    if (username) user.username = username;
-    
-    // Update email if provided
-    if (email) user.email = email;
+    const decoded = tokenService.verifyRefreshToken(token);
+    if (!decoded) {
+      return res.status(401).json({ success: false, message: 'Invalid refresh token' });
+    }
 
-    // If changing password
+    const user = await User.findById(decoded.id);
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'User not found' });
+    }
+
+    const tokens = tokenService.generateTokens(user);
+    setTokenCookies(res, tokens.accessToken, tokens.refreshToken);
+
+    res.json({ success: true, token: tokens.accessToken });
+  } catch (error) {
+    console.error('Token refresh error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ── Onboarding: save preferences, language, location ───────────
+exports.completeOnboarding = async (req, res) => {
+  try {
+    const { preferences, language, location, radius } = req.body;
+
+    const updateData = { onboardingCompleted: true };
+    if (preferences?.length) updateData.preferences = preferences;
+    if (language) updateData.language = language;
+    if (radius) updateData.radius = radius;
+    if (location?.coordinates?.length === 2) {
+      updateData.location = {
+        type: 'Point',
+        coordinates: location.coordinates // [lng, lat]
+      };
+    }
+
+    const user = await User.findByIdAndUpdate(req.user._id, updateData, {
+      new: true,
+      runValidators: true
+    }).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    info('ONBOARDING_COMPLETED', user._id, req.ip, { preferences, language });
+
+    res.json({ success: true, user });
+  } catch (error) {
+    console.error('Onboarding error:', error);
+    res.status(500).json({ success: false, message: 'Server error during onboarding' });
+  }
+};
+
+// ── Get current user ───────────────────────────────────────────
+exports.getMe = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('-password');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    res.json({ success: true, user });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ── Update profile ─────────────────────────────────────────────
+exports.updateProfile = async (req, res) => {
+  try {
+    const { username, email, currentPassword, newPassword, preferences, language, radius, location } = req.body;
+    const user = await User.findById(req.user._id).select('+password');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (username) user.username = username.toLowerCase();
+    if (email) user.email = email.toLowerCase();
+    if (preferences) user.preferences = preferences;
+    if (language) user.language = language;
+    if (radius) user.radius = radius;
+    if (location?.coordinates?.length === 2) {
+      user.location = { type: 'Point', coordinates: location.coordinates };
+    }
+
     if (currentPassword && newPassword) {
-      // Verify current password
       const isMatch = await user.comparePassword(currentPassword);
       if (!isMatch) {
-        logError('PASSWORD_UPDATE_FAILED', user._id, req.ip, { reason: 'Incorrect current password' });
-        return res.status(400).json({ message: 'Current password is incorrect' });
+        return res.status(400).json({ success: false, message: 'Current password is incorrect' });
       }
-
-      // Set new password (pre-save hook will hash it)
       user.password = newPassword;
+    }
+
+    const updated = await user.save();
+    const userObj = updated.toObject();
+    delete userObj.password;
+
+    res.json({ success: true, user: userObj, message: 'Profile updated' });
+  } catch (error) {
+    console.error('Profile update error:', error);
+    res.status(500).json({ success: false, message: 'Error updating profile' });
+  }
+};
+
+// ── Follow / Unfollow ──────────────────────────────────────────
+exports.toggleFollow = async (req, res) => {
+  try {
+    const targetId = req.params.userId;
+    if (targetId === req.user._id.toString()) {
+      return res.status(400).json({ success: false, message: 'Cannot follow yourself' });
+    }
+
+    const [currentUser, targetUser] = await Promise.all([
+      User.findById(req.user._id),
+      User.findById(targetId)
+    ]);
+    if (!targetUser) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const isFollowing = currentUser.following.includes(targetId);
+    if (isFollowing) {
+      currentUser.following.pull(targetId);
+      targetUser.followers.pull(req.user._id);
+    } else {
+      currentUser.following.push(targetId);
+      targetUser.followers.push(req.user._id);
       
-      // Log password change
-      info('PASSWORD_UPDATED', user._id, req.ip, { 
-        timestamp: new Date().toISOString() 
+      // Create follow notification
+      await Notification.create({
+        recipient: targetId,
+        sender: req.user._id,
+        type: 'follow'
       });
     }
 
-    // Save the updated user
-    const updatedUser = await user.save();
-
-    // Remove password from response
-    const userResponse = updatedUser.toObject();
-    delete userResponse.password;
+    await Promise.all([currentUser.save(), targetUser.save()]);
 
     res.json({
       success: true,
-      user: userResponse,
-      message: 'Profile updated successfully'
+      isFollowing: !isFollowing,
+      followersCount: targetUser.followers.length
     });
   } catch (error) {
-    console.error('Update profile error:', error);
-    logError('PROFILE_UPDATE_ERROR', req.user?._id, req.ip, { 
-      error: error.message,
-      stack: error.stack 
-    });
-    res.status(500).json({ message: 'Error updating profile' });
+    console.error('Follow toggle error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
-// @desc    Get user profile
-// @route   GET /api/auth/profile
-// @access  Private
+// ── Get Network Users (Followed & Suggested) ───────────────────
+exports.getNetworkUsers = async (req, res) => {
+  try {
+    const currentUser = await User.findById(req.user._id).select('following');
+    if (!currentUser) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const followingIds = currentUser.following || [];
+
+    const [followingUsers, suggestedUsers] = await Promise.all([
+      User.find({ _id: { $in: followingIds } })
+        .select('username avatar role isJournalistVerified followers trustScore')
+        .lean(),
+      User.find({ _id: { $nin: [...followingIds, req.user._id] } })
+        .select('username avatar role isJournalistVerified followers trustScore')
+        .limit(20)
+        .lean()
+    ]);
+
+    res.json({
+      success: true,
+      followingUsers,
+      suggestedUsers
+    });
+  } catch (error) {
+    console.error('Get network users error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ── Get Public Profile ──────────────────────────────────────
 exports.getUserProfile = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('-password');
-    if (user) {
-      res.json(user);
-    } else {
-      res.status(404).json({ message: 'User not found' });
+    const { id } = req.params;
+    const user = await User.findById(id).select('username avatar trustScore followers following role isJournalistVerified createdAt');
+    
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
+
+    const posts = await Post.find({ author: id, isAnonymous: false })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .populate('author', 'username role isJournalistVerified');
+
+    res.json({ success: true, profile: user, posts });
   } catch (error) {
-    console.error('Get profile error:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('Fetch profile error:', error);
+    res.status(500).json({ success: false, message: 'Server error fetching profile' });
   }
 };
 
-// @desc    Logout user / clear cookie
-// @route   POST /api/auth/logout
-// @access  Public
-exports.logout = (req, res) => {
-  res.cookie('token', '', {
-    httpOnly: true,
-    expires: new Date(0)
-  });
-  res.status(200).json({ message: 'Logged out successfully' });
-};
-
-// @desc    Create admin user
-// @route   POST /api/auth/create-admin
-// @access  Public (should be removed in production)
-exports.createAdmin = async (req, res) => {
+// ── Verify Reporter Status ──────────────────────────────────────
+exports.verifyReporter = async (req, res) => {
   try {
-    // Check if admin already exists
-    const adminExists = await User.findOne({ email: 'admin@pulsepoint.in' });
-    if (adminExists) {
-      return res.status(400).json({ message: 'Admin user already exists' });
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (user.isJournalistVerified) {
+      return res.status(400).json({ success: false, message: 'Already verified' });
     }
 
-    // Create admin user
+    if (user.trustScore >= 50) {
+      user.isJournalistVerified = true;
+      user.role = 'journalist';
+      await user.save();
+      return res.json({ success: true, message: 'Successfully verified as a reporter!', user });
+    } else {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Your trust score is ${user.trustScore}. You need at least 50 to become verified.` 
+      });
+    }
+  } catch (error) {
+    console.error('Verify reporter error:', error);
+    res.status(500).json({ success: false, message: 'Server error during verification' });
+  }
+};
+
+// ── Google OAuth callback ──────────────────────────────────────
+exports.googleCallback = async (req, res) => {
+  try {
+    const { accessToken, refreshToken } = tokenService.generateTokens(req.user);
+    setTokenCookies(res, accessToken, refreshToken);
+
+    // Redirect to onboarding if not completed, otherwise to home
+    const redirectUrl = req.user.onboardingCompleted
+      ? (process.env.CLIENT_URL || 'http://localhost:3000')
+      : (process.env.CLIENT_URL || 'http://localhost:3000') + '/onboarding';
+
+    res.redirect(redirectUrl);
+  } catch (error) {
+    console.error('Google callback error:', error);
+    res.redirect((process.env.CLIENT_URL || 'http://localhost:3000') + '/login?error=oauth_failed');
+  }
+};
+
+// ── Logout ─────────────────────────────────────────────────────
+exports.logout = (_req, res) => {
+  res.cookie('token', '', { httpOnly: true, expires: new Date(0), path: '/' });
+  res.cookie('refreshToken', '', { httpOnly: true, expires: new Date(0), path: '/' });
+  res.cookie('isLoggedIn', '', { expires: new Date(0), path: '/' });
+  res.json({ success: true, message: 'Logged out' });
+};
+
+// ── Bookmarks ──────────────────────────────────────────────────
+exports.toggleBookmark = async (req, res) => {
+  try {
+    const articleId = req.params.id;
+    const user = await User.findById(req.user._id);
+    
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    
+    const isBookmarked = user.savedArticles.includes(articleId);
+    if (isBookmarked) {
+      user.savedArticles.pull(articleId);
+    } else {
+      user.savedArticles.push(articleId);
+    }
+    
+    await user.save();
+    res.json({ success: true, isBookmarked: !isBookmarked });
+  } catch (error) {
+    console.error('Toggle bookmark error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+exports.getBookmarks = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).populate('savedArticles');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    
+    res.json({ success: true, bookmarks: user.savedArticles });
+  } catch (error) {
+    console.error('Fetch bookmarks error:', error);
+    res.status(500).json({ success: false, message: 'Server error fetching bookmarks' });
+  }
+};
+
+// ── Create admin (dev only) ────────────────────────────────────
+exports.createAdmin = async (req, res) => {
+  try {
+    const adminExists = await User.findOne({ email: 'admin@newssphere.in' });
+    if (adminExists) return res.status(400).json({ message: 'Admin already exists' });
+
     const admin = await User.create({
       username: 'admin',
-      email: 'admin@pulsepoint.in',
+      email: 'admin@newssphere.in',
       password: 'Admin@123',
-      role: 'admin'
+      role: 'admin',
+      onboardingCompleted: true
     });
 
     res.status(201).json({
-      message: 'Admin user created successfully',
-      user: {
-        _id: admin._id,
-        username: admin.username,
-        email: admin.email,
-        role: admin.role
-      }
+      message: 'Admin created',
+      user: { _id: admin._id, username: admin.username, email: admin.email, role: admin.role }
     });
   } catch (error) {
     console.error('Create admin error:', error);

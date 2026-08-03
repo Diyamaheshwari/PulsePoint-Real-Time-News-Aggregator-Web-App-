@@ -1,348 +1,241 @@
-// In server/controllers/newsController.js
-const { info, error } = require('../utils/logger');
-const NodeCache = require('node-cache');
-const rateLimit = require('express-rate-limit');
-const { fetchTopHeadlines, searchNews } = require('../services/newsService');
-require('dotenv').config();
+/**
+ * NewsSphere – News Controller (Global Feed)
+ *
+ * Serves the curated global news feed, ranked by a combination of
+ * user topic preferences, engagement signals, recency, and sentiment.
+ * Also provides AI-powered one-tap summarisation and article search.
+ */
+const News = require('../models/News');
+const claudeService = require('../services/claudeService');
 
-// Configure cache with a 5 minute TTL
-const newsCache = new NodeCache({ stdTTL: 300, checkperiod: 600 });
+// ── Preference-weighted ranking score ──────────────────────────
+function computeRankScore(article, userPreferences) {
+  let score = 0;
 
-// Rate limiting configuration
-const isDevelopment = process.env.NODE_ENV === 'development';
-const RATE_LIMIT = {
-  WINDOW_MS: isDevelopment ? 5 * 1000 : 60 * 1000, // 5 seconds in dev, 1 minute in prod
-  MAX_REQUESTS: isDevelopment ? 1000 : 10, // 1000 in dev, 10 in prod
-};
-
-// Track request counts per IP
-const requestCounts = new Map();
-
-// Reset request count for each IP after the window
-setInterval(() => {
-  requestCounts.clear();
-}, RATE_LIMIT.WINDOW_MS);
-
-// Rate limiting middleware for news API
-exports.apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again after 15 minutes',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-// Get top headlines
-exports.getTopHeadlines = async (req, res) => {
-  const { 
-    category = 'all',
-    country = 'us',
-    pageSize = 10, 
-    page = 1, 
-    q = ''
-  } = req.query;
-  
-  const ip = req.ip || req.connection.remoteAddress;
-  
-  // Rate limiting check
-  const requestCount = (requestCounts.get(ip) || 0) + 1;
-  requestCounts.set(ip, requestCount);
-  
-  if (requestCount > RATE_LIMIT.MAX_REQUESTS) {
-    const retryAfter = Math.ceil(RATE_LIMIT.WINDOW_MS / 1000);
-    res.set('Retry-After', retryAfter.toString());
-    return res.status(429).json({
-      status: 'error',
-      code: 429,
-      message: 'Too many requests, please try again later.',
-      retryAfter: `${retryAfter} seconds`
-    });
+  // Preference match bonus (strongest signal)
+  if (userPreferences?.length) {
+    const match = userPreferences.some(
+      p => p.toLowerCase() === article.category?.toLowerCase()
+    );
+    if (match) score += 50;
   }
-  
+
+  // Recency boost: articles within last 6h get a bonus
+  const hoursOld = (Date.now() - new Date(article.publishedAt).getTime()) / (1000 * 60 * 60);
+  if (hoursOld < 1) score += 30;
+  else if (hoursOld < 6) score += 20;
+  else if (hoursOld < 24) score += 10;
+
+  // Engagement boost
+  score += Math.min((article.engagementScore || 0) * 0.5, 20);
+
+  // Credibility boost
+  if (article.factCheckLabel === 'Verified') score += 10;
+  if (article.factCheckLabel === 'Disputed') score -= 15;
+
+  return score;
+}
+
+// ── Get global feed (ranked) ───────────────────────────────────
+exports.getGlobalFeed = async (req, res) => {
   try {
-    // Generate cache key
-    const cacheKey = `news_${category}_${country}_${pageSize}_${page}_${q}`;
+    const {
+      page = 1,
+      limit = 20,
+      category,
+      sentiment,
+      search,
+      country,
+      date,
+      sortBy = 'ranked' // 'ranked' | 'recent' | 'popular'
+    } = req.query;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Build filter
+    const filter = {};
+    if (category && category !== 'all') filter.category = category;
+    if (sentiment) filter.sentiment = sentiment;
+    if (country && country !== 'global') filter.country = country;
     
-    // Try to get data from cache first
-    const cachedData = newsCache.get(cacheKey);
-    if (cachedData) {
-      info(`Serving from cache: ${cacheKey}`);
-      return res.json({
-        ...cachedData,
-        cached: true
-      });
+    // Strict language filtering based on user preference
+    if (req.user && req.user.language && req.user.language !== 'all') {
+      filter.language = req.user.language;
     }
 
-    // Prepare API parameters
-    const params = {
-      pageSize: Math.min(parseInt(pageSize), 100), // Ensure pageSize is within limits
-      page: parseInt(page),
-      country: country.toLowerCase()
-    };
-
-    // Only add optional parameters if they have values
-    if (category && category !== 'all') params.category = category;
-    
-    // Add date filters if provided
-    if (req.query.from) params.from = req.query.from;
-    if (req.query.to) params.to = req.query.to;
-    
-    info(`Fetching top headlines with params: ${JSON.stringify({ ...params, country: params.country })}`);
-    
-    // Use the newsService to fetch data
-    const response = await fetchTopHeadlines(params);
-    
-    if (!response || response.status !== 'ok') {
-      throw new Error(response?.message || 'Failed to fetch top headlines');
+    if (date) {
+      // Parse date as local midnight → cover the full 24h window regardless of server timezone
+      // We add a ±1 day buffer so articles stored in any UTC offset still appear
+      const dateParts = date.split('-').map(Number); // [YYYY, MM, DD]
+      const start = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 0, 0, 0, 0);
+      const end   = new Date(dateParts[0], dateParts[1] - 1, dateParts[2], 23, 59, 59, 999);
+      filter.publishedAt = { $gte: start, $lte: end };
     }
-    
-    // Transform the response to match the expected format
-    const transformedData = {
-      status: 'ok',
-      totalResults: response.totalResults || 0,
-      articles: (response.articles || []).map(article => ({
-        title: article.title || 'No title available',
-        description: article.description || '',
-        content: article.content || '',
-        url: article.url || '#',
-        image: article.urlToImage || 'https://via.placeholder.com/300x200?text=No+Image',
-        publishedAt: article.publishedAt || new Date().toISOString(),
-        source: {
-          name: article.source?.name || 'Unknown',
-          url: article.url || '#'
-        }
-      }))
-    };
+    if (search) {
+      filter.$text = { $search: search };
+    }
 
-    // Cache the successful response
-    const cacheTTL = 300; // 5 minutes
-    newsCache.set(cacheKey, transformedData, cacheTTL);
-    
-    info(`Fetched ${transformedData.articles.length} articles for ${cacheKey}`);
-    
+    // Determine sort for initial DB query
+    let sort;
+    switch (sortBy) {
+      case 'popular':
+        sort = { engagementScore: -1, publishedAt: -1 };
+        break;
+      case 'recent':
+        sort = { publishedAt: -1 };
+        break;
+      default:
+        sort = { publishedAt: -1 }; // fetch recent, then re-rank in memory
+    }
+
+    const [articles, total] = await Promise.all([
+      News.find(filter)
+        .sort(sort)
+        .skip(skip)
+        .limit(sortBy === 'ranked' ? parseInt(limit) * 2 : parseInt(limit)) // over-fetch for ranking
+        .lean(),
+      News.countDocuments(filter)
+    ]);
+
+    let result = articles;
+
+    // Apply preference ranking if user is authenticated
+    if (sortBy === 'ranked') {
+      const userPreferences = req.user?.preferences || [];
+      result = articles
+        .map(a => ({ ...a, _rankScore: computeRankScore(a, userPreferences) }))
+        .sort((a, b) => b._rankScore - a._rankScore)
+        .slice(0, parseInt(limit));
+    }
+
     res.json({
-      ...transformedData,
-      cached: false,
-      timestamp: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + cacheTTL * 1000).toISOString()
+      success: true,
+      articles: result,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / parseInt(limit)),
+        hasMore: skip + result.length < total
+      }
     });
-  } catch (err) {
-    error('Error in getTopHeadlines:', err);
-    const statusCode = err.response?.status || 500;
-    let errorMessage = 'Failed to fetch top headlines';
-    
-    if (statusCode === 429) {
-      errorMessage = 'Rate limit exceeded. Please try again later.';
-      const retryAfter = err.response?.headers?.['retry-after'] || 60;
-      res.set('Retry-After', retryAfter.toString());
-    } else if (err.response?.data?.errors) {
-      errorMessage = err.response.data.errors.join('; ');
-    } else if (err.message) {
-      errorMessage = err.message;
-    }
-    
-    // Try to return cached data if available
-    const currentCacheKey = `news_${category}_${country}_${pageSize}_${page}_${q}`;
-    const cachedData = newsCache.get(currentCacheKey);
-    
-    if (cachedData) {
-      return res.status(200).json({
-        ...cachedData,
-        message: 'Serving cached data due to API error',
-        cached: true,
-        error: errorMessage
-      });
-    }
-      
-    // If no cached data and rate limited, suggest waiting
-    if (err.response && err.response.status === 429) {
-      const retryAfter = err.response.headers['retry-after'] || 60;
-      return res.status(429).json({
-        success: false,
-        error: 'API rate limit exceeded',
-        message: `Too many requests. Please try again after ${retryAfter} seconds`,
-        retryAfter: parseInt(retryAfter)
-      });
-    }
-      
-    return res.status(statusCode).json({
-      success: false,
-      error: 'Failed to fetch top headlines',
-      message: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? {
-        error: err.message,
-        status: err.response?.status,
-        code: err.code,
-        response: err.response?.data
-      } : undefined
-    });
+  } catch (error) {
+    console.error('Global feed error:', error);
+    res.status(500).json({ success: false, message: 'Error fetching news feed' });
   }
 };
 
-// Search news by keyword
-exports.searchNews = async (req, res) => {
-  const { q: query, page = 1, pageSize = 10 } = req.query;
-  
-  if (!query) {
-    return res.status(400).json({
-      success: false,
-      error: 'Search query is required',
-      message: 'Please provide a search query parameter (q)'
-    });
-  }
-
+// ── Get single article ─────────────────────────────────────────
+exports.getArticle = async (req, res) => {
   try {
-    // Prepare API parameters
-    const params = {
-      q: query,
-      pageSize: pageSize,
-      page: page
-    };
+    const article = await News.findByIdAndUpdate(
+      req.params.id,
+      { $inc: { clicks: 1, engagementScore: 1 } },
+      { new: true }
+    ).lean();
 
-    info(`Searching news with params: ${JSON.stringify(params)}`);
-    
-    // Use the newsService to fetch data
-    const response = await searchNews(params);
-    
-    if (!response || response.status !== 'ok') {
-      throw new Error(response?.message || 'Failed to search news');
-    }
-    
-    // Transform the response to match the expected format
-    const transformedData = {
-      status: 'ok',
-      totalResults: response.totalResults || 0,
-      articles: (response.articles || []).map(article => ({
-        title: article.title,
-        description: article.description,
-        content: article.content,
-        url: article.url,
-        image: article.urlToImage,
-        publishedAt: article.publishedAt,
-        source: {
-          name: article.source?.name || 'Unknown',
-          url: article.url
-        }
-      }))
-    };
+    if (!article) return res.status(404).json({ success: false, message: 'Article not found' });
 
-    // Cache the response
-    const cacheKey = `search_${query}_${page}_${pageSize}`;
-    newsCache.set(cacheKey, transformedData);
-    
-    info(`Fetched ${transformedData.articles.length} articles for ${cacheKey}`);
-    
-    // Send the response
-    res.json(transformedData);
-  } catch (err) {
-    error('Search News Error:', err);
-    const statusCode = err.response?.status || 500;
-    let errorMessage = 'Failed to search news';
-    
-    if (statusCode === 429) {
-      errorMessage = 'Rate limit exceeded. Please try again later.';
-      const retryAfter = err.response?.headers?.['retry-after'] || 60;
-      res.set('Retry-After', retryAfter.toString());
-    } else if (err.response?.data?.errors) {
-      errorMessage = err.response.data.errors.join('; ');
-    } else if (err.message) {
-      errorMessage = err.message;
-    }
-    
-    // Try to return cached data if available
-    const cacheKey = `search_${req.query.q}_${req.query.page || 1}_${req.query.pageSize || 10}`;
-    const cachedResponse = newsCache.get(cacheKey);
-    
-    if (cachedResponse) {
-      return res.status(200).json({
-        ...cachedResponse,
-        message: 'Serving cached data due to API error',
-        cached: true,
-        error: errorMessage
-      });
-    }
-      
-    return res.status(statusCode).json({
-      success: false,
-      error: 'Failed to search news',
-      message: errorMessage,
-      details: process.env.NODE_ENV === 'development' ? {
-        error: err.message,
-        response: err.response?.data
-      } : undefined
-    });
+    res.json({ success: true, article });
+  } catch (error) {
+    console.error('Get article error:', error);
+    res.status(500).json({ success: false, message: 'Error fetching article' });
   }
 };
 
-// Get top news categories
-exports.getTopCategories = (req, res) => {
+// ── One-tap AI summarise ───────────────────────────────────────
+exports.summariseArticle = async (req, res) => {
   try {
-    // This is a simplified example - in a real app, you might want to track
-    // popular categories based on user interactions or other metrics
-    const categories = [
-      'business', 'entertainment', 'general', 
-      'health', 'science', 'sports', 'technology'
-    ];
-    
+    const article = await News.findById(req.params.id);
+    if (!article) return res.status(404).json({ success: false, message: 'Article not found' });
+
+    // Return cached summary if available
+    if (article.summary) {
+      return res.json({ success: true, summary: article.summary, cached: true });
+    }
+
+    // Generate summary
+    const textToSummarise = article.content || article.description || article.title;
+    const summary = await claudeService.generateSummary(textToSummarise);
+
+    // Cache it
+    article.summary = summary;
+    await article.save();
+
+    res.json({ success: true, summary, cached: false });
+  } catch (error) {
+    console.error('Summarise error:', error);
+    res.status(500).json({ success: false, message: 'Error generating summary' });
+  }
+};
+
+// ── Like / share tracking (engagement) ─────────────────────────
+exports.trackEngagement = async (req, res) => {
+  try {
+    const { action } = req.body; // 'like' | 'share' | 'bookmark'
+    const update = { $inc: { engagementScore: 1 } };
+
+    if (action === 'like') update.$inc.likesCount = 1;
+    if (action === 'share') update.$inc.shares = 1;
+
+    const article = await News.findByIdAndUpdate(req.params.id, update, { new: true });
+    if (!article) return res.status(404).json({ success: false, message: 'Article not found' });
+
     res.json({
-      status: 'ok',
-      categories: categories.map(category => ({
-        id: category,
-        name: category.charAt(0).toUpperCase() + category.slice(1),
-        count: 0 // This would be populated with actual counts in a real app
-      }))
+      success: true,
+      engagementScore: article.engagementScore,
+      likesCount: article.likesCount,
+      shares: article.shares
     });
-  } catch (err) {
-    console.error('Error in getTopCategories:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch news categories',
-      message: err.message
-    });
+  } catch (error) {
+    console.error('Track engagement error:', error);
+    res.status(500).json({ success: false, message: 'Error tracking engagement' });
   }
 };
 
-// Get most viewed news
-exports.getMostViewed = async (req, res) => {
+// ── Get categories with article counts ─────────────────────────
+exports.getCategories = async (_req, res) => {
   try {
-    // Fetch top headlines from NewsAPI
-    const response = await axios.get(`${BASE_URL}/top-headlines`, {
-      params: {
-        apiKey: API_KEY,
-        language: 'en',
-        country: 'us',
-        pageSize: 10, // Get top 10 most viewed
-        page: 1
-      },
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'PulsePoint/1.0'
-      },
-      timeout: 10000
+    const categories = await News.aggregate([
+      { $group: { _id: '$category', count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]);
+
+    res.json({ success: true, categories });
+  } catch (error) {
+    console.error('Get categories error:', error);
+    res.status(500).json({ success: false, message: 'Error fetching categories' });
+  }
+};
+
+// ── Trending articles (top engagement in last 24h) ─────────────
+exports.getTrending = async (req, res) => {
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const trending = await News.find({ publishedAt: { $gte: since } })
+      .sort({ engagementScore: -1 })
+      .limit(10)
+      .lean();
+
+    res.json({ success: true, articles: trending });
+  } catch (error) {
+    console.error('Trending error:', error);
+    res.status(500).json({ success: false, message: 'Error fetching trending' });
+  }
+};
+
+// ── Get available date range in DB ─────────────────────────────
+exports.getDateRange = async (_req, res) => {
+  try {
+    const oldest = await News.findOne({}).sort({ publishedAt: 1 }).select('publishedAt').lean();
+    const newest = await News.findOne({}).sort({ publishedAt: -1 }).select('publishedAt').lean();
+    res.json({
+      success: true,
+      minDate: oldest?.publishedAt ? new Date(oldest.publishedAt).toISOString().slice(0, 10) : null,
+      maxDate: newest?.publishedAt ? new Date(newest.publishedAt).toISOString().slice(0, 10) : null
     });
-
-    // Transform the response to match our format
-    const mostViewed = (response.data.articles || []).map(article => ({
-      title: article.title,
-      description: article.description,
-      url: article.url,
-      urlToImage: article.urlToImage,
-      publishedAt: article.publishedAt || new Date().toISOString(),
-      source: article.source?.name || 'Unknown Source',
-      // In a real app, you would include view count from your database
-      viewCount: Math.floor(Math.random() * 1000) // Placeholder for demo
-    }));
-
-    // Sort by view count (descending)
-    mostViewed.sort((a, b) => b.viewCount - a.viewCount);
-
-    res.json(mostViewed);
-  } catch (err) {
-    console.error('Error in getMostViewed:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch most viewed news',
-      message: err.message
-    });
+  } catch (error) {
+    console.error('Date range error:', error);
+    res.status(500).json({ success: false, message: 'Error fetching date range' });
   }
 };

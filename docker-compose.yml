@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # MongoDB Service with persistent volume
+  mongodb:
+    image: mongo:latest
+    container_name: newssphere-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - newssphere-network
+
+  # Redis Cache Service for background BullMQ jobs
+  redis:
+    image: redis:alpine
+    container_name: newssphere-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - newssphere-network
+
+  # Express backend Node server
+  server:
+    build:
+      context: ./pulsepoint/server
+      dockerfile: Dockerfile
+    container_name: newssphere-server
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - MONGO_URI=mongodb://mongodb:27017/newssphere
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - newssphere-network
+
+  # Vite React client served via Nginx PWA
+  client:
+    build:
+      context: ./pulsepoint/client
+      dockerfile: Dockerfile
+    container_name: newssphere-client
+    ports:
+      - "80:80"
+    depends_on:
+      - server
+    networks:
+      - newssphere-network
+
+volumes:
+  mongo-data:
+
+networks:
+  newssphere-network:
+    driver: bridge

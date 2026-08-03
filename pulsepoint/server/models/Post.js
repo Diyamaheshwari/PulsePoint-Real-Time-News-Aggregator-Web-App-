@@ -12,6 +12,11 @@ const postSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  community: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Community',
+    default: null
+  },
   imageUrl: {
     type: String,
     default: ''
@@ -28,15 +33,45 @@ const postSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  tags: [{
+  category: {
     type: String,
-    trim: true
-  }]
+    enum: ['Traffic', 'Safety', 'Events', 'Weather', 'Politics', 'General', 'Alert', 'Event', 'Discussion', 'Lost&Found'],
+    default: 'General'
+  },
+  isAnonymous: {
+    type: Boolean,
+    default: false
+  },
+  location: {
+    type: {
+      type: String,
+      enum: ['Point']
+    },
+    coordinates: {
+      type: [Number], // [longitude, latitude]
+      required: false // Now optional since community posts might not be geo-located
+    }
+  },
+  flaggedCount: {
+    type: Number,
+    default: 0
+  },
+  isModerated: {
+    type: Boolean,
+    default: false
+  },
+  isApproved: {
+    type: Boolean,
+    default: true
+  }
 }, {
   timestamps: true,
   toJSON: { virtuals: true },
   toObject: { virtuals: true }
 });
+
+// Create 2dsphere index for geospatial querying
+postSchema.index({ location: '2dsphere' });
 
 // Virtual for comment count
 postSchema.virtual('commentCount').get(function() {

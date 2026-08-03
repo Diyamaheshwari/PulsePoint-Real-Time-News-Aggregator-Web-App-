@@ -22,14 +22,69 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['user', 'admin'],
+    enum: ['user', 'moderator', 'journalist', 'admin'],
     default: 'user'
   },
+  isJournalistVerified: {
+    type: Boolean,
+    default: false
+  },
+  preferences: [{
+    type: String,
+    enum: ['Politics', 'Sports', 'Technology', 'Business', 'Science', 'Entertainment', 'Health', 'General'],
+    default: 'General'
+  }],
+  language: {
+    type: String,
+    default: 'en'
+  },
+  location: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point'
+    },
+    coordinates: {
+      type: [Number], // [longitude, latitude]
+      default: [0, 0]
+    }
+  },
+  radius: {
+    type: Number, // user defined radius in km
+    default: 10
+  },
+  onboardingCompleted: {
+    type: Boolean,
+    default: false
+  },
+  trustScore: {
+    type: Number,
+    default: 0
+  },
+  followers: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+  following: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+  shadowBanned: {
+    type: Boolean,
+    default: false
+  },
+  savedArticles: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'News'
+  }],
   createdAt: {
     type: Date,
     default: Date.now
   }
 });
+
+// Create 2dsphere index for location queries
+userSchema.index({ location: '2dsphere' });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {

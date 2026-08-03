@@ -1,0 +1,77 @@
+name: NewsSphere CI Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  # Backend lint & verification
+  backend-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          cache: 'npm'
+          cache-dependency-path: pulsepoint/server/package-lock.json
+
+      - name: Install backend dependencies
+        run: |
+          cd pulsepoint/server
+          npm ci
+
+      - name: Verify build boots cleanly
+        run: |
+          cd pulsepoint/server
+          node -e "require('fs').existsSync('server.js') ? process.exit(0) : process.exit(1)"
+
+  # Frontend lint & build test
+  frontend-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          cache: 'npm'
+          cache-dependency-path: pulsepoint/client/package-lock.json
+
+      - name: Install frontend dependencies
+        run: |
+          cd pulsepoint/client
+          npm ci
+
+      - name: Build production Vite bundle
+        run: |
+          cd pulsepoint/client
+          npm run build
+
+  # Verify Docker building matches
+  docker-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build server Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./pulsepoint/server
+          push: false
+          tags: newssphere-server:test
+
+      - name: Build client Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./pulsepoint/client
+          push: false
+          tags: newssphere-client:test

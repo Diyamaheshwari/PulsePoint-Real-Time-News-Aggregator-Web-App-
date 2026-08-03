@@ -84,3 +84,9 @@ typings/
 
 # TernJS port file
 .tern-port
+
+# Build outputs
+dist/
+*/dist/
+test*.js
+pulsepoint/server/test*.js

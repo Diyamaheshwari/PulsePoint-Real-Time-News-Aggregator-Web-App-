@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 const MAX_RETRIES = 2; // Reduced from 3 to 2 to be less aggressive
 const INITIAL_RETRY_DELAY = 2000; // Increased initial delay to 2 seconds
 const MAX_RETRY_DELAY = 10000; // 10 seconds max delay
