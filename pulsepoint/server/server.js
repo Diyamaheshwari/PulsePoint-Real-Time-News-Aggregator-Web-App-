@@ -196,13 +196,22 @@ const createAdminUser = async () => {
   }
 };
 
-// ── Start ──────────────────────────────────────────────────────
+// ── Serverless DB Auto-Connect Middleware ──────────────────────
+app.use(async (_req, _res, next) => {
+  if (mongoose.connection.readyState !== 1) {
+    try {
+      await connectDB();
+    } catch (_) {}
+  }
+  next();
+});
+
 const startServer = async () => {
   try {
     await connectDB();
     await setupDailyPolls();
     await createAdminUser();
-    await startAggregatorQueue(); // BullMQ or node-schedule fallback
+    await startAggregatorQueue();
 
     const PORT = process.env.PORT || 5000;
     server.listen(PORT, () => {
@@ -215,14 +224,8 @@ const startServer = async () => {
   }
 };
 
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled Rejection:', err);
-  server.close(() => process.exit(1));
-});
+if (require.main === module) {
+  startServer();
+}
 
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-  server.close(() => process.exit(1));
-});
-
-startServer();
+module.exports = app;
