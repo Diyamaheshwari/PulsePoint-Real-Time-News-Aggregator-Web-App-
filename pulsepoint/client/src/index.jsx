@@ -1,5 +1,6 @@
-// In index.js, update the imports and AppWithProviders component
 import React from 'react';
+import axios from 'axios';
+window.axios = axios;
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { Provider } from 'react-redux';
