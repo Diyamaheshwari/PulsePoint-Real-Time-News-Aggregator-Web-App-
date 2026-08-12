@@ -13,8 +13,8 @@ export default defineConfig({
   // Shim process.env for CRA-style references throughout the codebase
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development'),
-    'process.env.REACT_APP_API_URL': JSON.stringify('http://localhost:5000/api'),
-    'process.env.REACT_APP_WS_URL': JSON.stringify('http://localhost:5000'),
+    'process.env.REACT_APP_API_URL': JSON.stringify(process.env.VITE_API_URL || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:5000/api')),
+    'process.env.REACT_APP_WS_URL': JSON.stringify(process.env.VITE_WS_URL || (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:5000')),
     'process.env.REACT_APP_GNEWS_API_KEY': JSON.stringify('78851e057c859675d6bf620dabbd142f'),
     'process.env.REACT_APP_NEWSAPI_API_KEY': JSON.stringify('12d26136a2d8413f9f2157d9b8230b0f'),
     'process.env.REACT_APP_NEWSAPI_BASE_URL': JSON.stringify('https://newsapi.org/v2'),
