@@ -17,6 +17,9 @@ if (typeof window !== 'undefined') {
   window.axios = axios;
 }
 
+const defaultBaseUrl = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? window.location.origin : 'http://localhost:5000');
+axios.defaults.baseURL = defaultBaseUrl.endsWith('/api') ? defaultBaseUrl.slice(0, -4) : defaultBaseUrl;
+
 const root = createRoot(document.getElementById('root'));
 
 const AppWithProviders = () => (
