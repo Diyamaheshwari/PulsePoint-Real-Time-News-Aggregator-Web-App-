@@ -13,8 +13,7 @@ class WebSocketService {
   connect(token) {
     if (this.socket) return;
 
-    // Use WebSocket protocol (ws://) for the connection
-    const socketUrl = process.env.REACT_APP_WS_URL || 'ws://localhost:5000';
+    const socketUrl = import.meta.env.VITE_WS_URL || (import.meta.env.PROD ? window.location.origin : 'http://localhost:5000');
     const options = {
       path: '/socket.io',
       transports: ['websocket'],

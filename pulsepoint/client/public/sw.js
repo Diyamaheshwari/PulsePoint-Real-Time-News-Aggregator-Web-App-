@@ -1,4 +1,4 @@
-const CACHE_NAME = 'newssphere-v2';
+const CACHE_NAME = 'newssphere-v3';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',

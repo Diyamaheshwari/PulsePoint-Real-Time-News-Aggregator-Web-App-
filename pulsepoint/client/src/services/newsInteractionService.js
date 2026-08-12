@@ -64,7 +64,9 @@ export const getReactions = async (articleId) => {
 
 // Subscribe to real-time updates
 export const subscribeToUpdates = (articleId, onUpdate) => {
-  const socket = new WebSocket(`ws://localhost:5000`); // Adjust the WebSocket URL as needed
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsHost = import.meta.env.VITE_WS_URL || (import.meta.env.PROD ? `${wsProtocol}//${window.location.host}` : 'ws://localhost:5000');
+  const socket = new WebSocket(wsHost);
   
   socket.onopen = () => {
     console.log('WebSocket connected');
