@@ -133,15 +133,19 @@ app.use((err, _req, res, _next) => {
 
 // ── Database ───────────────────────────────────────────────────
 const connectDB = async () => {
+  if (mongoose.connection.readyState === 1) return;
+  const mongoUri = process.env.MONGODB_URI || 'mongodb+srv://Diyab:Diya%40123@pulsepoint.z0jirjt.mongodb.net/pulsepoint?retryWrites=true&w=majority&appName=PulsePoint';
   try {
-    await mongoose.connect(process.env.MONGODB_URI, {
+    await mongoose.connect(mongoUri, {
       useNewUrlParser: true,
       useUnifiedTopology: true
     });
     console.log('MongoDB Connected…');
   } catch (err) {
     console.error('MongoDB connection error:', err.message);
-    process.exit(1);
+    if (require.main === module) {
+      process.exit(1);
+    }
   }
 };
 
