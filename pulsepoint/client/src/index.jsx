@@ -1,6 +1,5 @@
 import React from 'react';
 import axios from 'axios';
-window.axios = axios;
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { Provider } from 'react-redux';
@@ -13,6 +12,10 @@ import { CommunityProvider } from './context/CommunityContext';
 import { AuthProvider } from './context/AuthContext';
 import App from './App';
 import './index.css';
+
+if (typeof window !== 'undefined') {
+  window.axios = axios;
+}
 
 const root = createRoot(document.getElementById('root'));
 
