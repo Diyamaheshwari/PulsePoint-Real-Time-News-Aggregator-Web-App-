@@ -45,13 +45,20 @@ app.set('webSocketService', webSocketService);
 
 // ── CORS ───────────────────────────────────────────────────────
 const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? [process.env.CLIENT_URL]
+  ? [
+      process.env.CLIENT_URL,
+      process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null,
+      process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null
+    ].filter(Boolean)
   : ['http://localhost:3000', 'http://localhost:5173', 'http://127.0.0.1:3000', 'http://127.0.0.1:5173'];
 
 const corsOptions = {
   origin(origin, callback) {
+    // Allow if no origin (e.g. same origin or non-browser)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.some(o => origin === o || origin.startsWith(o.replace(/^https?:\/\//, 'http://')) || origin.startsWith(o.replace(/^https?:\/\//, 'https://')))) {
+    
+    // Check if origin matches allowed origins or is a vercel app
+    if (allowedOrigins.some(o => origin === o || origin.startsWith(o.replace(/^https?:\/\//, 'http://')) || origin.startsWith(o.replace(/^https?:\/\//, 'https://'))) || origin.endsWith('.vercel.app')) {
       callback(null, true);
     } else {
       console.log('CORS blocked:', origin);
